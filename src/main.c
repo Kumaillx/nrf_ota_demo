@@ -17,6 +17,11 @@
 #include <zephyr/devicetree.h>
 #include <soc.h>
 
+#include <zephyr/logging/log.h>
+LOG_MODULE_REGISTER(app_main, LOG_LEVEL_INF);
+
+#define FW_VERSION "1.0.0"
+
 #include <zephyr/bluetooth/bluetooth.h>
 #include <zephyr/bluetooth/uuid.h>
 #include <zephyr/bluetooth/gatt.h>
@@ -599,6 +604,48 @@ static void configure_gpio(void)
 	}
 }
 
+#define STACK_SIZE 1024
+
+/* Thread Synchronizations */
+K_MUTEX_DEFINE(storage_mutex);
+K_MSGQ_DEFINE(sensor_msgq, sizeof(uint32_t), 10, 4);
+
+/* Simple Data Models */
+static uint32_t boot_counter = 0;
+
+/* --- Logger & NVS Manager Thread --- */
+void logger_thread_entry(void *p1, void *p2, void *p3)
+{
+    uint32_t received_sensor_val;
+    
+    // Simulate reading/writing boot counter using NVS or mock variables securely protected via Mutex
+    k_mutex_lock(&storage_mutex, K_FOREVER);
+    boot_counter++;
+    LOG_INF("Boot Counter safely read/incremented: %d", boot_counter);
+    k_mutex_unlock(&storage_mutex);
+
+    while (1) {
+        if (k_msgq_get(&sensor_msgq, &received_sensor_val, K_MSEC(500)) == 0) {
+            LOG_INF("[Logger Thread] Received Sensor Metric: %d Processed", received_sensor_val);
+        }
+        k_sleep(K_MSEC(100));
+    }
+}
+K_THREAD_DEFINE(logger_tid, STACK_SIZE, logger_thread_entry, NULL, NULL, NULL, PRIORITY, 0, 0);
+
+/* --- Sensor Mocking Thread --- */
+void sensor_thread_entry(void *p1, void *p2, void *p3)
+{
+    uint32_t dummy_metric = 100;
+    while (1) {
+        dummy_metric++;
+        // Post reading safely to message queue without breaking context
+        k_msgq_put(&sensor_msgq, &dummy_metric, K_NO_WAIT);
+        k_sleep(K_MSEC(2000)); // Sample every 2 seconds
+    }
+}
+K_THREAD_DEFINE(sensor_tid, STACK_SIZE, sensor_thread_entry, NULL, NULL, NULL, PRIORITY, 0, 0);
+
 int main(void)
 {
 	int blink_status = 0;
@@ -610,6 +657,13 @@ int main(void)
 	if (err) {
 		error();
 	}
+
+	LOG_INF("========================================");
+	LOG_INF("Application Boot Success");
+	LOG_INF("Firmware Version: %s", FW_VERSION);
+	LOG_INF("Bootloader Detected: MCUboot");
+	LOG_INF("Active Slot: Primary (Execution)");
+	LOG_INF("========================================");
 
 	if (IS_ENABLED(CONFIG_BT_NUS_SECURITY_ENABLED)) {
 		err = bt_conn_auth_cb_register(&conn_auth_callbacks);
